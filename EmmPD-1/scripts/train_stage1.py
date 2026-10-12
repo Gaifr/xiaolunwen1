@@ -187,6 +187,12 @@ def run_stage1(config: Stage1TrainingConfig) -> Stage1RunResult:
         split: CamelyonDataset.from_manifest(config.manifest, split)
         for split in ("train", "val")
     }
+    with Path(config.manifest).open(newline="", encoding="utf-8") as handle:
+        manifest_rows = list(csv.DictReader(handle))
+    for split, dataset in datasets.items():
+        expected = sum(row.get("split", "").strip() == split for row in manifest_rows)
+        if dataset.audit or len(dataset) != expected:
+            raise ValueError(f"STAGE1_INCOMPLETE_SPLIT {split} {dataset.audit}")
     train_slides = [_move_slide(slide, device) for slide in datasets["train"]]
     val_slides = [_move_slide(slide, device) for slide in datasets["val"]]
     if not train_slides or not val_slides:
