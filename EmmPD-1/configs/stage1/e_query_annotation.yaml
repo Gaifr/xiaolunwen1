@@ -1,0 +1,24 @@
+seed: 9233
+manifest: ${CAMELYON16_ROOT}/derived/manifest_stage1.csv
+output_root: ${CAMELYON16_ROOT}/runs/stage1/e_query_annotation
+model:
+  variant: query
+  graph_mode: none
+  input_dim: 1024
+  hidden_dim: 256
+  k_s: 8
+  k_m: 8
+  num_queries: 32
+  num_heads: 8
+  dropout: 0.1
+  num_layers: 2
+objective:
+  lambda_loc: 1.0
+  lambda_div: 0.0
+training:
+  epochs: 50
+  patience: 10
+  lr: 0.0001
+  weight_decay: 0.0001
+  grad_clip: 5.0
+  device: cuda
