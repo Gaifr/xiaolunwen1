@@ -67,7 +67,7 @@ def parse_truth(path: str | Path) -> Truth:
     # ASAP names are semantic in the local files; numeric IDs follow README16.
     roles = {"tumor": "tumor", "tumour": "tumor", "exclusion": "exclusion",
              "_0": "tumor", "_1": "tumor", "_2": "exclusion"}
-    unknown = declared - set(roles)
+    unknown = {group for group in declared if group.casefold() not in roles}
     if unknown:
         raise ValueError(f"XML_UNKNOWN_GROUP {sorted(unknown)}")
     tumors, exclusions, repairs = [], [], []
@@ -90,7 +90,7 @@ def parse_truth(path: str | Path) -> Truth:
         polygons = _parts(geom)
         if not polygons:
             raise ValueError(f"XML_NO_POSITIVE_AREA annotation={index}")
-        (tumors if roles[group] == "tumor" else exclusions).extend(polygons)
+        (tumors if roles[group.casefold()] == "tumor" else exclusions).extend(polygons)
     if not tumors:
         raise ValueError("XML_NO_TUMOR")
     net = unary_union(tumors).difference(unary_union(exclusions) if exclusions else shapely.GeometryCollection())
