@@ -111,7 +111,7 @@ def test_audit_keeps_repair_inventory_after_other_slide_error(tmp_path: Path, mo
                              "slide_label": int(i < 60), "xml_path": f"slide_{i:03d}.xml"})
     repair = {"annotation": 3, "reason": "Self-intersection"}
     monkeypatch.setattr(audit_stage3, "parse_truth", lambda path: SimpleNamespace(
-        repairs=(repair,) if str(path).endswith("slide_000.xml") else ()))
+        lesions=(), repairs=(repair,) if str(path).endswith("slide_000.xml") else ()))
     monkeypatch.setattr(audit_stage3, "_sha256", lambda path: "xml-hash")
 
     def failing_slide(row, truth):
