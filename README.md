@@ -11,7 +11,7 @@ existing Python environment with `requirements-stage3.txt` installed.
 
 ```bash
 export CAMELYON16_ROOT=/path/to/CAMELYON16
-python -m pytest -q tests/test_stage3_metrics.py tests/test_stage1_training_smoke.py
+python -m pytest -q tests/test_stage3_metrics.py tests/test_stage3_repair_renderer.py tests/test_stage1_training_smoke.py
 python scripts/audit_stage3.py \
   --manifest "$CAMELYON16_ROOT/derived/manifest_stage1.csv" \
   --output "$CAMELYON16_ROOT/runs/stage3/audit.json"
@@ -23,8 +23,23 @@ train/validation truth checks and skips test performance computation. It writes
 slide fails. Exit code 3 means `needs_review`: inspect `repair_cases`, including
 the XML hash, annotation index, validity reason, bounds, and geometry changes.
 Exit code 2 means `failed`: inspect `issues` as well. Neither status permits
-`freeze_stage3.py` to create a lock. For the real E/F smoke, give selected
-**training** slide IDs:
+`freeze_stage3.py` to create a lock. Generate train/validation repair images
+from the audit report:
+
+```bash
+python scripts/render_stage3_xml_repairs.py \
+  --manifest "$CAMELYON16_ROOT/derived/manifest_stage1.csv" \
+  --audit-report "$CAMELYON16_ROOT/runs/stage3/audit.json" \
+  --output "$CAMELYON16_ROOT/runs/stage3/xml_repair_review_train_val"
+```
+
+This renders train/validation WSI crops and contact sheets and writes a blank
+`review_queue.csv`. It checks each XML hash against the audit report. Inspect
+the images and record a decision for every repair; generating images does not
+approve any repair or change the audit status. Test XML repairs can be rendered
+separately with `--split test` after the review rules are fixed.
+
+For the real E/F smoke, give selected **training** slide IDs:
 
 ```bash
 python scripts/smoke_stage3_ef.py \
