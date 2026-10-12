@@ -18,8 +18,13 @@ python scripts/audit_stage3.py \
 ```
 
 The audit checks all 100 H5 patch grids and WSI bounds. It uses XML for
-train/validation truth checks and skips test performance computation. For the
-real E/F smoke, give selected **training** slide IDs:
+train/validation truth checks and skips test performance computation. It writes
+`audit.json` even when an XML polygon needs `make_valid` review or another
+slide fails. Exit code 3 means `needs_review`: inspect `repair_cases`, including
+the XML hash, annotation index, validity reason, bounds, and geometry changes.
+Exit code 2 means `failed`: inspect `issues` as well. Neither status permits
+`freeze_stage3.py` to create a lock. For the real E/F smoke, give selected
+**training** slide IDs:
 
 ```bash
 python scripts/smoke_stage3_ef.py \

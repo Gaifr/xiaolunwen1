@@ -16,6 +16,7 @@ import shapely
 from shapely.geometry import Point, Polygon, box
 from shapely.ops import unary_union
 from shapely.strtree import STRtree
+from shapely.validation import explain_validity
 from sklearn.metrics import average_precision_score, roc_auc_score
 
 
@@ -85,8 +86,13 @@ def parse_truth(path: str | Path) -> Truth:
         raw = Polygon(points)
         geom = raw if raw.is_valid else shapely.make_valid(raw)
         if not raw.is_valid:
-            repairs.append({"annotation": index, "before_area": raw.area,
-                            "after_area": geom.area, "after_type": geom.geom_type})
+            repairs.append({
+                "annotation": index, "group": group,
+                "reason": explain_validity(raw), "bounds_level0": list(raw.bounds),
+                "vertex_count": len(points), "before_area": raw.area,
+                "after_area": geom.area, "area_delta": geom.area - raw.area,
+                "after_type": geom.geom_type, "polygon_parts": len(_parts(geom)),
+            })
         polygons = _parts(geom)
         if not polygons:
             raise ValueError(f"XML_NO_POSITIVE_AREA annotation={index}")

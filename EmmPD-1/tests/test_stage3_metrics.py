@@ -74,6 +74,66 @@ def test_exclusion_hole_and_point_touch_component(tmp_path: Path):
     assert len(parse_truth(path).lesions) == 1
 
 
+def test_invalid_xml_polygon_has_reviewable_repair_record(tmp_path: Path):
+    path = tmp_path / "self_intersection.xml"
+    path.write_text(
+        '<ASAP_Annotations><Annotations><Annotation PartOfGroup="Tumor">'
+        '<Coordinates><Coordinate Order="0" X="0" Y="0" />'
+        '<Coordinate Order="1" X="10" Y="10" />'
+        '<Coordinate Order="2" X="0" Y="10" />'
+        '<Coordinate Order="3" X="10" Y="0" />'
+        '</Coordinates></Annotation></Annotations><AnnotationGroups>'
+        '<Group Name="Tumor" /></AnnotationGroups></ASAP_Annotations>',
+        encoding="utf-8",
+    )
+    truth = parse_truth(path)
+    assert len(truth.repairs) == 1
+    repair = truth.repairs[0]
+    assert repair["annotation"] == 0 and repair["group"] == "Tumor"
+    assert repair["reason"] and repair["vertex_count"] == 4
+    assert repair["bounds_level0"] == [0.0, 0.0, 10.0, 10.0]
+    assert repair["polygon_parts"] >= 1 and repair["after_area"] > 0
+
+
+def test_audit_keeps_repair_inventory_after_other_slide_error(tmp_path: Path, monkeypatch):
+    import csv
+    from types import SimpleNamespace
+
+    from scripts import audit_stage3
+
+    manifest = tmp_path / "manifest.csv"
+    with manifest.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=("slide_id", "split", "slide_label", "xml_path"))
+        writer.writeheader()
+        for i in range(100):
+            writer.writerow({"slide_id": f"slide_{i:03d}",
+                             "split": "train" if i < 60 else "val" if i < 80 else "test",
+                             "slide_label": int(i < 60), "xml_path": f"slide_{i:03d}.xml"})
+    repair = {"annotation": 3, "reason": "Self-intersection"}
+    monkeypatch.setattr(audit_stage3, "parse_truth", lambda path: SimpleNamespace(
+        repairs=(repair,) if str(path).endswith("slide_000.xml") else ()))
+    monkeypatch.setattr(audit_stage3, "_sha256", lambda path: "xml-hash")
+
+    def failing_slide(row, truth):
+        if row["slide_id"] == "slide_001":
+            raise ValueError("H5_XML_LABEL_MISMATCH")
+        return {"slide_id": row["slide_id"]}, None
+
+    monkeypatch.setattr(audit_stage3, "_audit_slide", failing_slide)
+    output = tmp_path / "audit.json"
+    result = audit_stage3.audit(manifest, output)
+    assert result["status"] == "failed" and result["slide_count"] == 99
+    assert result["repair_annotation_count"] == 1
+    assert result["repair_cases"][0]["xml_sha256"] == "xml-hash"
+    assert result["issues"][0]["slide_id"] == "slide_001"
+    assert output.exists()
+
+    monkeypatch.setattr(audit_stage3, "_audit_slide",
+                        lambda row, truth: ({"slide_id": row["slide_id"]}, None))
+    monkeypatch.setattr(audit_stage3, "peak_froc", lambda slides: {"detections": []})
+    assert audit_stage3.audit(manifest, output)["status"] == "needs_review"
+
+
 def test_peak_plateau_and_duplicate_detection_with_normal_slide():
     coords = np.asarray([[0, 0], [10, 0], [20, 0], [30, 0], [40, 0]])
     assert peaks(coords, 10, np.ones(5)) == [2]
