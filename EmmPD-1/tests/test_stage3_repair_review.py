@@ -154,7 +154,16 @@ def test_assistant_validation_and_flagged_accepted_resolution(tmp_path):
     assert reviewed["results"][0]["geometry_decision"] == "needs_user_confirmation"
     receipt = create_review_receipt(manifest, audit, queue, assistant, confirmation, tmp_path / "receipt.json")
     assert receipt["schema"] == "stage3-xml-repair-review-v2"
-    assert receipt["review_responsibilities"]["user"] == "confirm_unflagged_review_and_resolve_flags"
+    responsibilities = receipt["review_responsibilities"]
+    assert responsibilities["assistant"]["reviewer"] == "assistant"
+    assert responsibilities["assistant"]["scope"] == "geometry_only"
+    assert responsibilities["assistant"]["reviewed_count"] == 1
+    assert responsibilities["assistant"]["flagged_count"] == 1
+    assert responsibilities["user"]["reviewer"] == "Xiaoxiao"
+    assert responsibilities["user"]["scope"] == "confirm_unflagged_review_and_resolve_flags"
+    assert responsibilities["user"]["acknowledge_geometry_only_scope"] is True
+    assert responsibilities["user"]["acknowledge_unflagged_review"] is True
+    assert responsibilities["user"]["resolution_count"] == 1
 
 
 @pytest.mark.parametrize("target", ["assistant", "confirmation", "queue"])
