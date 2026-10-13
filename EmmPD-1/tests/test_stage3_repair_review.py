@@ -43,13 +43,14 @@ def _fixture(tmp_path, decision="accept_make_valid"):
     queue = review_dir / "review_queue.csv"
     with queue.open("w", newline="", encoding="utf-8") as stream:
         fields = ("slide_id", "split", "xml_sha256", "annotation", "group", "reason",
-                  "after_type", "polygon_parts", "after_area", "image",
+                  "after_type", "polygon_parts", "before_area", "after_area", "image",
                   "review_decision", "review_note")
         writer = csv.DictWriter(stream, fieldnames=fields)
         writer.writeheader()
         writer.writerow({"slide_id": "tumor_000", "split": "train", "xml_sha256": _sha256(xml),
                          "annotation": 4, "group": "Tumor", "reason": "Self-intersection",
-                         "after_type": "MultiPolygon", "polygon_parts": 2, "after_area": 25.0,
+                         "after_type": "MultiPolygon", "polygon_parts": 2,
+                         "before_area": 30.0, "after_area": 25.0,
                          "image": "tumor_000__ann_0004.png", "review_decision": decision,
                          "review_note": "repair follows the drawn contour"})
     return manifest, audit, queue, xml, report
@@ -82,7 +83,8 @@ def test_receipt_rejects_missing_or_unapproved_rows(tmp_path):
     with queue.open("w", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=("slide_id", "split", "xml_sha256", "annotation",
                                                     "group", "reason", "after_type", "polygon_parts",
-                                                    "after_area", "image", "review_decision", "review_note"))
+                                                    "before_area", "after_area", "image",
+                                                    "review_decision", "review_note"))
         writer.writeheader()
     with pytest.raises(ValueError, match="REPAIR_REVIEW_INVENTORY_MISMATCH"):
         create_review_receipt(manifest, audit, queue, "Xiaoxiao", tmp_path / "empty-receipt.json")
