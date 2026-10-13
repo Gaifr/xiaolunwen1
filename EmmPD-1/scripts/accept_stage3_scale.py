@@ -145,12 +145,11 @@ def _load_inventory(inventory_path: Path) -> tuple[dict[str, dict[str, Any]], di
     return records, inventory
 
 
-def _inventory_gate(row: dict[str, str], inventory: dict[str, Any],
+def _inventory_gate(row: dict[str, str], item: dict[str, Any],
                     manifest_dir: Path) -> dict[str, Any]:
     slide_id = row["slide_id"]
-    if slide_id not in inventory:
-        raise ValueError(f"INVENTORY_SLIDE_MISSING {slide_id}")
-    item = inventory[slide_id]
+    if str(item.get("slide_id") or "") != slide_id:
+        raise ValueError(f"INVENTORY_SLIDE_ID_MISMATCH {slide_id}")
     if item.get("split") != row["split"]:
         raise ValueError(f"INVENTORY_SPLIT_MISMATCH {slide_id}")
     if item.get("status") != "passed":
@@ -395,6 +394,7 @@ def run_scale_acceptance(manifest_path: Path, inventory_path: Path,
         "peak_interpretation": PEAK_INTERPRETATION,
         "repetitions_requested": repetitions,
         "repetitions_completed": len(summaries_by_run),
+        "repetition_summary_slide_counts": [len(summaries) for summaries in summaries_by_run],
         "repetition_digests": digests,
         "deterministic_digest": digests[0] if digests else None,
         "wall_time_seconds": elapsed,

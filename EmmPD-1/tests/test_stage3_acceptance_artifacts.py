@@ -301,6 +301,32 @@ def _patch_scale_inputs(
     return opened_h5, seen_xml
 
 
+def test_inventory_gate_accepts_the_record_selected_by_slide_id(tmp_path):
+    acceptance, _ = _require_runner("scripts.accept_stage3_scale", "run_scale_acceptance")
+    h5_path = tmp_path / "train_001.h5"
+    h5_path.write_bytes(b"checked H5 placeholder")
+    row = {
+        "slide_id": "train_001",
+        "split": "train",
+        "h5_path": str(h5_path),
+    }
+    inventory_item = {
+        "slide_id": "train_001",
+        "split": "train",
+        "status": "passed",
+        "h5_sha256": _sha256(h5_path),
+        "patch_count": 4,
+        "patch_size_level0": 10,
+        "wsi_dimensions": [40, 10],
+    }
+
+    verified = acceptance._inventory_gate(row, inventory_item, tmp_path)
+
+    assert verified["h5_path"] == h5_path
+    assert verified["h5_sha256"] == inventory_item["h5_sha256"]
+    assert verified["patch_count"] == 4
+
+
 def test_scale_acceptance_is_train_val_only_and_has_stable_model_free_digest(
     tmp_path, monkeypatch
 ):
@@ -360,6 +386,7 @@ def test_scale_acceptance_is_train_val_only_and_has_stable_model_free_digest(
     for slide_id in eligible_ids - positive_eligible_ids:
         assert by_slide[slide_id]["xml_sha256"] is None
     assert len(report["repetition_digests"]) == 2
+    assert report["repetition_summary_slide_counts"] == [80, 80]
     assert report["repetition_digests"][0] == report["repetition_digests"][1]
     assert report["deterministic_digest"] == report["repetition_digests"][0]
     assert isinstance(report["wall_time_seconds"], (int, float))
@@ -417,5 +444,9 @@ def test_scale_acceptance_fails_if_repeated_canonical_outputs_differ(tmp_path, m
     )
 
     assert report["status"] == "failed"
+    assert report["repetitions_completed"] == 2
+    assert report["repetition_summary_slide_counts"] == [80, 80]
+    assert len(report["slides"]) == 80
     assert len(report["repetition_digests"]) == 2
+    assert all(len(digest) == 64 for digest in report["repetition_digests"])
     assert report["repetition_digests"][0] != report["repetition_digests"][1]
