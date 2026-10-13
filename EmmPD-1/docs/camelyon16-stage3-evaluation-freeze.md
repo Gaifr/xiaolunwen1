@@ -1,10 +1,10 @@
-# CAMELYON16 第三阶段：评价协议设计复审稿
+# CAMELYON16 第三阶段：冻结评价协议与记录
 
 **版本：** 1.0
-**日期：** 2026-10-12
-**状态：** 设计方向已由用户确认；XML 修复复核收据流程已实现，服务器端测试、复核及最终冻结尚未完成，故目前不是已冻结协议。
+**日期：** 2026-10-13
+**状态：** 正式冻结。双阶段 XML 几何复核、机器证据清单和冻结锁已在服务器验收目录生成；冻结锁绑定本文件及当前数据、代码和配置哈希。
 
-本协议定义 CAMELYON16 Stage-1 的评价单位、病灶几何、区域预算、指标、模型选择、统计报告和测试集隔离。协议与评估器、合成几何验收及 E/F 预测导出全部对齐后，才能正式冻结和启动基线训练。
+本协议定义 CAMELYON16 Stage-1 的评价单位、病灶几何、区域预算、指标、模型选择、统计报告和测试集隔离。服务器验收目录为 `/root/autodl-tmp/CAMELYON16/runs/stage3/acceptance_v2/`；其中证据清单和冻结锁是本次冻结状态的机器可核验证据。
 
 ## 1. 研究问题与结论边界
 
@@ -211,29 +211,27 @@ F 使用每个 UNI patch 的线性 logit z_j，patch 概率为 sigmoid(z_j)，�
 
 测试集可在训练前按冻结规则做数据完整性和坐标检查，不看预测热图、模型指标或 XML oracle 结果。协议版本、split manifest、配置、特征清单、修复审核收据和评估代码哈希锁定后，独立评估入口运行一次。测试评估器验证收据哈希及当前 XML 哈希；验证或训练评估遇到修复标注时也必须使用同一冻结收据。实现错误修复只能保持本协议定义不变；任何定义变化须形成新协议版本，并在打开测试预测前完成。
 
-## 11. 当前证据快照和冻结门槛
+## 11. 当前证据快照和冻结记录
 
-以下是 2026-10-12 先前审计与 smoke 摘要。本轮已重新连到服务器并核实代码目录和 XML 组名，但尚未重新运行这些数值审计与 smoke：
+2026-10-13 的 Stage 3 收尾在服务器完成。机器验收覆盖 100 张 H5、12 个指标合成案例、80 张 train/validation 规模案例，以及固定 4 张训练切片上的 E/F 共 8 份导出。XML 修复队列有 200 条：助手完成几何初审，用户接受 7 条标记疑点并确认其余 193 条几何初审通过；这只确认修复轮廓与原画线意图，不构成病理组织性质复核。收据、证据清单和冻结锁分别保存在上述 `acceptance_v2` 目录；具体数据、报告、配置及代码哈希以冻结锁为准。
 
-- 100 张 WSI，60/20/20 划分；所有样本来自原始训练 WSI。
-- 100 个 H5 结构检查无失败，共 635,638 个 patch，特征维度 1024。
-- XML 共 1,229 个当前操作性连通分量；62 个没有候选 patch 覆盖，约占连通分量数的 5.0%。未覆盖净肿瘤面积约 0.0292%。3 张阳性切片没有二值阳性 patch。
-- 100 个 patient_id 未核实；抽样叠图为 5 张，并非全面可视化验收。
-- A–D 在 4 张训练切片的实现 smoke 共 16 个前向/反向实例通过；D 定位梯度非零。这不证明定位指标数值正确、FROC 可扩展、E/F 已通过或模型有效。
+- 所有样本仍来自 CAMELYON16 原始训练 WSI，当前结论仅适用于切片级内部留出。patient_id 未核实，患者级隔离与外部泛化没有得到证明。
+- 测试切片只纳入预先定义的 XML/坐标质量检查与几何复核；本次冻结没有运行正式训练、测试预测或依据测试表现调整协议。
+- 服务器 Stage 3 回归测试在本次验收闭环中通过；单元测试、几何样例、尺度验收和 E/F smoke 都是实现/数据门槛，不是模型有效性证据。
 
-正式冻结前必须满足：
+本次冻结门槛核对结果：
 
-1. 本地 `Tumor`/`Exclusion` 到 `_0/_1/_2` 的映射按用户确认记录；说明本地 XML 不独立证明转换链。未知组和修复异常已处理。
-2. 全部 100 个 H5 的 patch 几何满足等大、唯一、不重叠和 WSI 边界条件。
-3. 评估代码实现 MLAC、u_i、随机参照、XML oracle、peak-FROC、NA 规则和配对统计。
-4. 人工几何样例和 train/validation 规模检查通过，并留存预期与实际结果。
-5. E/F 完成真实训练切片 forward/backward smoke 和完整预测导出验收；F 的 max-MIL 输出与损失已实现。
-6. 训练入口只读取 train/validation，所有组共享选择规则与训练采样。
-7. 保存协议版本、split manifest SHA-256、H5/特征清单、配置、源码版本及评价器哈希。
-8. 所有审计列出的 XML 修复均已有 `accept_make_valid` 决定，且通过收据程序生成绑定当前 manifest/audit/XML 的收据；任何待核查行都会阻断冻结。
-9. 由用户复审本稿和以上验收材料后，才将状态改为“正式冻结”并启动正式基线训练。
+1. **通过：** 用户确认 `Exclusion` 对应 `_2`；文档注明此来源映射来自用户确认，XML 本身不证明转换链。
+2. **通过：** 100 张 H5 的 patch 几何验收已纳入通过的 H5 清单。
+3. **通过：** 评估实现含 MLAC、可达上限、随机参照、XML oracle、peak-FROC、NA 和配对统计规则；12 个合成案例通过。
+4. **通过：** 12 个几何/指标合成案例和 80 张 train/validation 规模验收通过。
+5. **通过：** E/F 在 4 张固定训练切片上完成 forward/backward 和 8 份预测导出检查。
+6. **通过：** 训练入口、split 使用范围、统一选择与采样规则已经代码检查和测试覆盖；尚未启动正式训练。
+7. **通过：** 证据清单绑定 split、H5、A–F 配置模板、18 份种子配置与相关源码哈希。
+8. **通过：** 200 条 XML 修复队列均有 `accept_make_valid` 决定；双阶段收据绑定当前 manifest、audit、队列、XML 和审核记录。
+9. **通过：** 用户要求先完成阶段三收尾，并已确认 7 条标记疑点及其余 193 条的几何初审范围。此确认不代表病理性质复核；阶段四正式训练不在本次运行中启动。
 
-在上述门槛通过前，不读取测试预测来修订指标、阈值、几何规则、checkpoint 规则或模型选择。
+阶段三冻结后，不得根据测试预测修改指标、阈值、几何规则、checkpoint 规则或模型选择。任何协议定义变化都必须建立新版本，并在查看测试预测前完成。
 
 ## 12. 机器证据清单与冻结锁
 
@@ -246,14 +244,16 @@ F 使用每个 UNI patch 的线性 logit z_j，patch 概率为 sigmoid(z_j)，�
 示例命令（路径按服务器实际目录替换）：
 
 ```bash
+export CAMELYON16_ROOT=/root/autodl-tmp/CAMELYON16
+
 python scripts/build_stage3_evidence_manifest.py \
   --manifest "$CAMELYON16_ROOT/derived/manifest_stage1.csv" \
-  --audit-report "$CAMELYON16_ROOT/runs/stage3/acceptance_v2/audit.json" \
+  --audit-report "$CAMELYON16_ROOT/runs/stage3/audit.json" \
   --repair-review-receipt "$CAMELYON16_ROOT/runs/stage3/acceptance_v2/repair_review_receipt.json" \
   --h5-inventory "$CAMELYON16_ROOT/runs/stage3/acceptance_v2/h5_inventory.json" \
   --metric-acceptance "$CAMELYON16_ROOT/runs/stage3/acceptance_v2/metric_acceptance.json" \
   --scale-acceptance "$CAMELYON16_ROOT/runs/stage3/acceptance_v2/scale_acceptance.json" \
-  --ef-report "$CAMELYON16_ROOT/runs/stage3/acceptance_v2/ef_smoke/smoke_report.json" \
+  --ef-report "$CAMELYON16_ROOT/runs/stage3/acceptance_v2/ef_smoke_v2/smoke_report.json" \
   --config-dir configs/stage1 \
   --output "$CAMELYON16_ROOT/runs/stage3/acceptance_v2/evidence_manifest.json"
 
@@ -262,4 +262,5 @@ python scripts/freeze_stage3.py \
   --output "$CAMELYON16_ROOT/runs/stage3/acceptance_v2/freeze_lock.json"
 ```
 
-`freeze_stage3.py` 不接受手工确认布尔值或任意重复配置参数。评估入口在打开 test manifest、加载切片数据、H5 或 WSI 之前，先验证冻结锁绑定的证据清单及其来源、配置和外部验收文件哈希。当前 XML 仍待人工复核的情况下，不得生成正式收据、证据清单或冻结锁；这段示例不表示这些产物已经存在。
+`freeze_stage3.py` 不接受手工确认布尔值或任意重复配置参数。评估入口在打开 test manifest、加载切片数据、H5 或 WSI 之前，先验证冻结锁绑定的证据清单及其来源、配置和外部验收文件哈希。数据、配置、源码、协议或验收产物发生变化时，旧锁即失效，必须重新构建证据清单和冻结锁。
+
