@@ -38,6 +38,12 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _canonical_sha256(payload: dict) -> str:
+    encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False,
+                         separators=(",", ":"), allow_nan=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _write_json(path: Path, payload: dict) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
@@ -308,6 +314,11 @@ def evidence_case(tmp_path: Path):
     ef_dir.mkdir()
     records = []
     for variant in ("query", "linear_patch"):
+        model_config = {
+            "variant": variant, "graph_mode": "none", "input_dim": 1024,
+            "hidden_dim": 256, "k_s": 8, "k_m": 8, "num_queries": 32,
+            "num_heads": 8, "dropout": 0.1, "num_layers": 2,
+        }
         for slide_id in APPROVED_SMOKE_SLIDES:
             prediction_file = f"{variant}_{slide_id}.pt"
             prediction_path = ef_dir / prediction_file
@@ -318,7 +329,9 @@ def evidence_case(tmp_path: Path):
                 "prediction_file": prediction_file, "prediction_sha256": _sha256(prediction_path),
                 "manifest_sha256": _sha256(manifest), "h5_sha256": h5_record["h5_sha256"],
                 "model_sha256": "b" * 64 if variant == "query" else "d" * 64,
-                "config_sha256": "c" * 64 if variant == "query" else "e" * 64,
+                "config_sha256": _canonical_sha256(model_config),
+                "model_state_stage": "fresh_initialization",
+                "model_config": model_config,
                 "score_sources": {
                     "slide_logits": "model_output",
                     "slide_probabilities": "softmax(slide_logits)",
@@ -551,6 +564,57 @@ def test_build_rejects_incomplete_or_wrong_scope_ef_exports_and_file_hashes(
     _write_json(evidence_case["ef_report"], report)
 
     with pytest.raises(ValueError):
+        _build(evidence_case)
+
+
+def test_build_rejects_ef_smoke_without_fresh_initialization_provenance(evidence_case):
+    report = json.loads(evidence_case["ef_report"].read_text(encoding="utf-8"))
+    report["records"][0].pop("model_state_stage")
+    _write_json(evidence_case["ef_report"], report)
+
+    with pytest.raises(ValueError, match="STAGE3_EF_MODEL_STATE_STAGE"):
+        _build(evidence_case)
+
+
+def test_build_rejects_ef_model_config_mismatched_to_variant(evidence_case):
+    report = json.loads(evidence_case["ef_report"].read_text(encoding="utf-8"))
+    for record in report["records"]:
+        if record["variant"] == "query":
+            record["model_config"]["variant"] = "linear_patch"
+            record["config_sha256"] = _canonical_sha256(record["model_config"])
+    _write_json(evidence_case["ef_report"], report)
+
+    with pytest.raises(ValueError, match="STAGE3_EF_MODEL_CONFIG_MISMATCH"):
+        _build(evidence_case)
+
+
+def test_build_rejects_ef_smoke_without_model_config(evidence_case):
+    report = json.loads(evidence_case["ef_report"].read_text(encoding="utf-8"))
+    report["records"][0].pop("model_config")
+    _write_json(evidence_case["ef_report"], report)
+
+    with pytest.raises(ValueError, match="STAGE3_EF_MODEL_CONFIG_MISMATCH"):
+        _build(evidence_case)
+
+
+def test_build_rejects_ef_smoke_with_non_none_graph_config(evidence_case):
+    report = json.loads(evidence_case["ef_report"].read_text(encoding="utf-8"))
+    report["records"][0]["model_config"]["graph_mode"] = "dual"
+    report["records"][0]["config_sha256"] = _canonical_sha256(
+        report["records"][0]["model_config"]
+    )
+    _write_json(evidence_case["ef_report"], report)
+
+    with pytest.raises(ValueError, match="STAGE3_EF_MODEL_CONFIG_MISMATCH"):
+        _build(evidence_case)
+
+
+def test_build_rejects_ef_smoke_with_config_hash_not_matching_payload(evidence_case):
+    report = json.loads(evidence_case["ef_report"].read_text(encoding="utf-8"))
+    report["records"][0]["config_sha256"] = "0" * 64
+    _write_json(evidence_case["ef_report"], report)
+
+    with pytest.raises(ValueError, match="STAGE3_EF_MODEL_CONFIG_HASH"):
         _build(evidence_case)
 
 

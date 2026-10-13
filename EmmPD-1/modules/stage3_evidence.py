@@ -37,6 +37,17 @@ METRIC_CASE_IDS = {
 }
 SMOKE_SLIDES = ("normal_001", "tumor_002", "tumor_011", "tumor_031")
 SMOKE_VARIANTS = ("query", "linear_patch")
+SMOKE_MODEL_CONFIG = {
+    "graph_mode": "none",
+    "input_dim": 1024,
+    "hidden_dim": 256,
+    "k_s": 8,
+    "k_m": 8,
+    "num_queries": 32,
+    "num_heads": 8,
+    "dropout": 0.1,
+    "num_layers": 2,
+}
 LOCKED_SOURCE_FILES = (
     "modules/stage3_metrics.py",
     "modules/stage3_review.py",
@@ -346,10 +357,15 @@ def _validate_ef_report(report: dict, report_path: Path, manifest_path: Path,
         if ("patch_count" in record
                 and record["patch_count"] != inventory_by_id[slide_id].get("patch_count")):
             raise ValueError(f"STAGE3_EF_PATCH_COUNT {variant} {slide_id}")
-        if ("model_state_stage" in record
-                and record["model_state_stage"] != "fresh_initialization"):
+        if record.get("model_state_stage") != "fresh_initialization":
             raise ValueError(f"STAGE3_EF_MODEL_STATE_STAGE {variant} {slide_id}")
+        model_config = record.get("model_config")
+        expected_model_config = {**SMOKE_MODEL_CONFIG, "variant": variant}
+        if not isinstance(model_config, dict) or model_config != expected_model_config:
+            raise ValueError(f"STAGE3_EF_MODEL_CONFIG_MISMATCH {variant} {slide_id}")
         if not _valid_sha(record.get("model_sha256")) or not _valid_sha(record.get("config_sha256")):
+            raise ValueError(f"STAGE3_EF_MODEL_CONFIG_HASH {variant} {slide_id}")
+        if record["config_sha256"] != _canonical_json_sha256(model_config):
             raise ValueError(f"STAGE3_EF_MODEL_CONFIG_HASH {variant} {slide_id}")
         sources = record.get("score_sources")
         expected_patch_source = "evidence_scores" if variant == "query" else "raw_patch_logits"
