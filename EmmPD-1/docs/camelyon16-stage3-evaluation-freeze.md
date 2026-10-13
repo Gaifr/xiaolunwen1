@@ -234,3 +234,32 @@ F 使用每个 UNI patch 的线性 logit z_j，patch 概率为 sigmoid(z_j)，�
 9. 由用户复审本稿和以上验收材料后，才将状态改为“正式冻结”并启动正式基线训练。
 
 在上述门槛通过前，不读取测试预测来修订指标、阈值、几何规则、checkpoint 规则或模型选择。
+
+## 12. 机器证据清单与冻结锁
+
+冻结必须由机器可复核的证据清单驱动。`modules/stage3_evidence.py` 将 manifest、审计报告、修复审核收据、100 张 H5 清单、12 个指标合成样例、80 张 train/validation 规模验收、E/F 八份 smoke 导出、A–F 六份模板、三个种子的 18 份解析后配置及相关源码哈希绑定为 `stage3-evidence-manifest-v1`。
+
+配置模板固定对应 `configs/stage1/a_pooling.yaml`、`b_query.yaml`、`c_graph_query.yaml`、`d_graph_query_annotation.yaml`、`e_query_annotation.yaml`、`f_linear_patch_annotation.yaml`。每个种子的有效配置由训练入口的 `load_config(..., seed=...)` 解析，再按排序后的 UTF-8 JSON 计算哈希；因此冻结记录包含应用默认值后的配置，而不只包含 YAML 文件哈希。
+
+若 XML 审计状态为 `needs_review`，必须先有通过校验的双阶段收据：助手记录几何初审，用户确认未标记项并处理疑点。缺收据、收据责任不完整、清单哈希变化或修复明细不匹配时，证据构建和冻结均失败。程序只验证收据，不生成审核结论。
+
+示例命令（路径按服务器实际目录替换）：
+
+```bash
+python scripts/build_stage3_evidence_manifest.py \
+  --manifest "$CAMELYON16_ROOT/derived/manifest_stage1.csv" \
+  --audit-report "$CAMELYON16_ROOT/runs/stage3/acceptance_v2/audit.json" \
+  --repair-review-receipt "$CAMELYON16_ROOT/runs/stage3/acceptance_v2/repair_review_receipt.json" \
+  --h5-inventory "$CAMELYON16_ROOT/runs/stage3/acceptance_v2/h5_inventory.json" \
+  --metric-acceptance "$CAMELYON16_ROOT/runs/stage3/acceptance_v2/metric_acceptance.json" \
+  --scale-acceptance "$CAMELYON16_ROOT/runs/stage3/acceptance_v2/scale_acceptance.json" \
+  --ef-report "$CAMELYON16_ROOT/runs/stage3/acceptance_v2/ef_smoke/smoke_report.json" \
+  --config-dir configs/stage1 \
+  --output "$CAMELYON16_ROOT/runs/stage3/acceptance_v2/evidence_manifest.json"
+
+python scripts/freeze_stage3.py \
+  --evidence-manifest "$CAMELYON16_ROOT/runs/stage3/acceptance_v2/evidence_manifest.json" \
+  --output "$CAMELYON16_ROOT/runs/stage3/acceptance_v2/freeze_lock.json"
+```
+
+`freeze_stage3.py` 不接受手工确认布尔值或任意重复配置参数。评估入口在打开 test manifest、加载切片数据、H5 或 WSI 之前，先验证冻结锁绑定的证据清单及其来源、配置和外部验收文件哈希。当前 XML 仍待人工复核的情况下，不得生成正式收据、证据清单或冻结锁；这段示例不表示这些产物已经存在。

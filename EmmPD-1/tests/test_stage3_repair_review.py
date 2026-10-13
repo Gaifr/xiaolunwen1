@@ -8,7 +8,6 @@ import pytest
 
 from modules.stage3_review import (assert_repairs_approved, create_review_receipt,
                                    validate_review_receipt)
-from scripts.freeze_stage3 import lock_payload, verify_lock
 
 
 def _sha256(path):
@@ -203,25 +202,15 @@ def test_receipt_rejects_stale_audit_and_xml_hashes(tmp_path):
         validate_review_receipt(receipt_path, manifest, audit)
 
 
-def test_freeze_and_evaluator_require_the_same_validated_receipt(tmp_path):
+def test_review_receipt_approval_is_bound_to_current_xml_identity(tmp_path):
     manifest, audit, queue, xml, report = _fixture(tmp_path)
-    receipt = _receipt(tmp_path, manifest, audit, queue)
-    config = tmp_path / "config.yaml"
-    config.write_text("seed: 9233\n", encoding="utf-8")
+    receipt_path = _receipt(tmp_path, manifest, audit, queue)
+    receipt = validate_review_receipt(receipt_path, manifest, audit)
 
-    with pytest.raises(ValueError, match="STAGE3_REPAIR_REVIEW_REQUIRED"):
-        lock_payload(manifest, audit, [config])
-
-    lock = lock_payload(manifest, audit, [config], repair_review_receipt=receipt)
-    assert lock["repair_review_sha256"] == _sha256(receipt)
-    lock_path = tmp_path / "freeze.json"
-    lock_path.write_text(json.dumps(lock), encoding="utf-8")
-    verified = verify_lock(lock_path, manifest, repair_review_receipt=receipt)
-    assert_repairs_approved(verified["repair_review"], "tumor_000", "train", _sha256(xml),
+    assert receipt["review_responsibilities"]["assistant"]["reviewed_count"] == 1
+    assert receipt["review_responsibilities"]["user"]["resolution_count"] == 1
+    assert_repairs_approved(receipt, "tumor_000", "train", _sha256(xml),
                             report["repair_cases"][0]["repairs"])
     with pytest.raises(ValueError, match="REPAIR_REVIEW_XML_MISMATCH"):
-        assert_repairs_approved(verified["repair_review"], "tumor_000", "train", "0" * 64,
+        assert_repairs_approved(receipt, "tumor_000", "train", "0" * 64,
                                 report["repair_cases"][0]["repairs"])
-
-    with pytest.raises(ValueError, match="STAGE3_REPAIR_REVIEW_LOCK_MISMATCH"):
-        verify_lock(lock_path, manifest, repair_review_receipt=tmp_path / "missing.json")
