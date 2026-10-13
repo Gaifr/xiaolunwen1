@@ -211,7 +211,7 @@ def main():
     parser.add_argument("--split", choices=("train", "val", "test"), action="append")
     args = parser.parse_args()
     result = render(args.manifest, args.audit_report, args.output,
-                    set(args.split or ("train", "val")))
+                    set(args.split or ("train", "val", "test")))
     print(json.dumps(result, ensure_ascii=False))
 
 

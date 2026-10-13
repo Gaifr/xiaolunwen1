@@ -68,3 +68,16 @@ def test_repair_renderer_checks_xml_and_writes_review_queue(tmp_path, monkeypatc
         rows = list(csv.DictReader(stream))
     assert len(rows) == 1 and rows[0]["review_decision"] == ""
     assert rows[0]["contact_sheet"] == "tumor_000__sheet_01.png"
+
+
+def test_renderer_cli_defaults_all_splits_and_preserves_explicit_split(monkeypatch, tmp_path):
+    import sys
+    calls = []
+    monkeypatch.setattr(renderer, "render", lambda manifest, audit, output, splits: calls.append(splits) or {})
+    args = ["renderer", "--manifest", "manifest.csv", "--audit-report", "audit.json", "--output", str(tmp_path)]
+    monkeypatch.setattr(sys, "argv", args)
+    renderer.main()
+    assert calls[-1] == {"train", "val", "test"}
+    monkeypatch.setattr(sys, "argv", args + ["--split", "val"])
+    renderer.main()
+    assert calls[-1] == {"val"}

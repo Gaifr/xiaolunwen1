@@ -56,9 +56,30 @@ def _fixture(tmp_path, decision="accept_make_valid"):
     return manifest, audit, queue, xml, report
 
 
+def _stages(tmp_path, queue, geometry_decision="geometry_ok"):
+    with queue.open(newline="", encoding="utf-8") as stream:
+        row = next(csv.DictReader(stream))
+    identity = {field: row[field] for field in ("slide_id", "split", "xml_sha256", "annotation")}
+    assistant = tmp_path / "assistant.json"
+    assistant.write_text(json.dumps({
+        "schema": "stage3-xml-geometry-review-v1", "reviewer": "assistant",
+        "reviewed_at_utc": "2026-10-13T01:00:00Z", "queue_sha256": _sha256(queue),
+        "results": [{**identity, "geometry_decision": geometry_decision,
+                     "geometry_note": "contour checked"}]}))
+    confirmation = tmp_path / "confirmation.json"
+    confirmation.write_text(json.dumps({
+        "schema": "stage3-xml-user-confirmation-v1", "reviewer": "Xiaoxiao",
+        "confirmed_at_utc": "2026-10-13T02:00:00Z", "queue_sha256": _sha256(queue),
+        "assistant_review_sha256": _sha256(assistant),
+        "acknowledge_geometry_only_scope": True, "acknowledge_unflagged_review": True,
+        "resolutions": [{**identity, "decision": "accept_make_valid", "review_note": "accepted"}]}))
+    return assistant, confirmation
+
+
 def _receipt(tmp_path, manifest, audit, queue):
+    assistant, confirmation = _stages(tmp_path, queue)
     output = tmp_path / "repair_review_receipt.json"
-    create_review_receipt(manifest, audit, queue, "Xiaoxiao", output)
+    create_review_receipt(manifest, audit, queue, assistant, confirmation, output)
     return output
 
 
@@ -77,22 +98,83 @@ def test_receipt_binds_complete_review_inventory_and_current_xml(tmp_path):
                             report["repair_cases"][0]["repairs"])
 
 
-def test_receipt_rejects_missing_or_unapproved_rows(tmp_path):
+@pytest.mark.parametrize("stage, mutation", [
+    ("assistant", "missing"), ("assistant", "duplicate"), ("assistant", "extra"),
+    ("assistant", "stale"), ("assistant", "undecided"), ("assistant", "cannot_judge"),
+    ("confirmation", "missing"), ("confirmation", "duplicate"), ("confirmation", "extra"),
+    ("confirmation", "stale"), ("confirmation", "reject"), ("confirmation", "scope"),
+    ("confirmation", "acknowledge"), ("assistant", "timestamp"), ("confirmation", "timestamp"),
+])
+def test_two_stage_receipt_blocks_incomplete_or_invalid_review(tmp_path, stage, mutation):
     manifest, audit, queue, _, _ = _fixture(tmp_path)
+    assistant, confirmation = _stages(tmp_path, queue, "needs_user_confirmation")
+    path = assistant if stage == "assistant" else confirmation
+    data = json.loads(path.read_text())
+    field = "results" if stage == "assistant" else "resolutions"
+    if mutation == "missing":
+        data[field] = []
+    elif mutation == "duplicate":
+        data[field] *= 2
+    elif mutation == "extra":
+        data[field].append({**data[field][0], "annotation": 99})
+    elif mutation == "stale":
+        data["queue_sha256"] = "0" * 64
+    elif mutation in {"undecided", "cannot_judge"}:
+        data[field][0]["geometry_decision"] = "" if mutation == "undecided" else mutation
+    elif mutation == "reject":
+        data[field][0]["decision"] = "reject"
+    elif mutation == "scope":
+        data["acknowledge_geometry_only_scope"] = False
+    elif mutation == "acknowledge":
+        data["acknowledge_unflagged_review"] = False
+    elif mutation == "timestamp":
+        data["reviewed_at_utc" if stage == "assistant" else "confirmed_at_utc"] = "2026-10-13"
+    path.write_text(json.dumps(data))
+    if stage == "assistant":
+        data = json.loads(confirmation.read_text())
+        data["assistant_review_sha256"] = _sha256(assistant)
+        confirmation.write_text(json.dumps(data))
+    with pytest.raises(ValueError):
+        create_review_receipt(manifest, audit, queue, assistant, confirmation, tmp_path / "receipt.json")
 
-    with queue.open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.DictWriter(stream, fieldnames=("slide_id", "split", "xml_sha256", "annotation",
-                                                    "group", "reason", "after_type", "polygon_parts",
-                                                    "before_area", "after_area", "image",
-                                                    "review_decision", "review_note"))
-        writer.writeheader()
-    with pytest.raises(ValueError, match="REPAIR_REVIEW_INVENTORY_MISMATCH"):
-        create_review_receipt(manifest, audit, queue, "Xiaoxiao", tmp_path / "empty-receipt.json")
 
-    manifest, audit, queue, _, _ = _fixture(tmp_path, decision="needs_source_review")
+def test_unflagged_review_still_needs_explicit_confirmation(tmp_path):
+    manifest, audit, queue, _, _ = _fixture(tmp_path)
+    assistant, confirmation = _stages(tmp_path, queue)
+    confirmation.unlink()
+    with pytest.raises(ValueError):
+        create_review_receipt(manifest, audit, queue, assistant, confirmation, tmp_path / "receipt.json")
 
-    with pytest.raises(ValueError, match="REPAIR_REVIEW_NOT_ACCEPTED"):
-        create_review_receipt(manifest, audit, queue, "Xiaoxiao", tmp_path / "receipt.json")
+
+def test_assistant_validation_and_flagged_accepted_resolution(tmp_path):
+    from modules import stage3_review
+    manifest, audit, queue, _, _ = _fixture(tmp_path)
+    assistant, confirmation = _stages(tmp_path, queue, "needs_user_confirmation")
+    reviewed = stage3_review.validate_assistant_review(queue, assistant, manifest, audit)
+    assert reviewed["results"][0]["geometry_decision"] == "needs_user_confirmation"
+    receipt = create_review_receipt(manifest, audit, queue, assistant, confirmation, tmp_path / "receipt.json")
+    assert receipt["schema"] == "stage3-xml-repair-review-v2"
+    assert receipt["review_responsibilities"]["user"] == "confirm_unflagged_review_and_resolve_flags"
+
+
+@pytest.mark.parametrize("target", ["assistant", "confirmation", "queue"])
+def test_receipt_rechecks_live_stage_hashes(tmp_path, target):
+    manifest, audit, queue, _, _ = _fixture(tmp_path)
+    receipt_path = _receipt(tmp_path, manifest, audit, queue)
+    path = {"assistant": tmp_path / "assistant.json", "confirmation": tmp_path / "confirmation.json", "queue": queue}[target]
+    path.write_text(path.read_text() + " ")
+    with pytest.raises(ValueError):
+        validate_review_receipt(receipt_path, manifest, audit)
+
+
+def test_v1_receipt_cannot_pass_v2_validation(tmp_path):
+    manifest, audit, queue, _, _ = _fixture(tmp_path)
+    receipt_path = _receipt(tmp_path, manifest, audit, queue)
+    receipt = json.loads(receipt_path.read_text())
+    receipt["schema"] = "stage3-xml-repair-review-v1"
+    receipt_path.write_text(json.dumps(receipt))
+    with pytest.raises(ValueError, match="SCHEMA_INVALID"):
+        validate_review_receipt(receipt_path, manifest, audit)
 
 
 def test_receipt_rejects_stale_audit_and_xml_hashes(tmp_path):
