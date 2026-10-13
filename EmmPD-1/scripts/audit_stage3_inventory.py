@@ -72,6 +72,11 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _coordinate_sha256(coords: np.ndarray) -> str:
+    canonical = np.asarray(coords, dtype="<i8", order="C")
+    return hashlib.sha256(canonical.tobytes(order="C")).hexdigest()
+
+
 def _failure(row: dict[str, Any], code: str, message: str) -> None:
     if code not in row["failures"]:
         row["failures"].append(code)
@@ -177,8 +182,7 @@ def _inspect_slide(
     row: dict[str, Any],
     item: dict[str, Any],
     duplicate_ids: set[str],
-    feature_dim_reference: int | None,
-) -> int | None:
+) -> None:
     required_present = all(str(row.get(field) or "").strip() for field in MANIFEST_FIELDS)
     _mark(item, "manifest_fields", required_present)
     if not required_present:
@@ -232,7 +236,7 @@ def _inspect_slide(
 
     if h5_path is None or item["h5_sha256"] is None:
         _mark(item, "h5_file_readable", False)
-        return feature_dim_reference
+        return
 
     try:
         with h5py.File(h5_path, "r") as handle:
@@ -264,11 +268,6 @@ def _inspect_slide(
                     _mark(item, "feature_dim_positive", positive_dim)
                     if not positive_dim:
                         _failure(item, "FEATURE_DIM_INVALID", "Feature dimension must be positive")
-                    elif feature_dim_reference is None:
-                        feature_dim_reference = int(features.shape[1])
-                    elif int(features.shape[1]) != feature_dim_reference:
-                        _failure(item, "FEATURE_DIM_MISMATCH", f"Expected {feature_dim_reference}, found {features.shape[1]}")
-                    _mark(item, "feature_dim_consistent", positive_dim and int(features.shape[1]) == feature_dim_reference)
                     if positive_dim:
                         try:
                             finite, code = _feature_finite(features)
@@ -347,7 +346,7 @@ def _inspect_slide(
                             _failure(item, "COORD_NEGATIVE", "Coordinates must be nonnegative")
                         if len(coords):
                             x_values, y_values = coords[:, 0], coords[:, 1]
-                            item["coordinate_sha256"] = hashlib.sha256(coords.tobytes(order="C")).hexdigest()
+                            item["coordinate_sha256"] = _coordinate_sha256(coords)
                             item["coordinate_bounds"] = {
                                 "min_x": int(x_values.min()),
                                 "min_y": int(y_values.min()),
@@ -355,7 +354,7 @@ def _inspect_slide(
                                 "max_y": int(y_values.max()),
                             }
                         elif item["patch_count"] == 0:
-                            item["coordinate_sha256"] = hashlib.sha256(coords.tobytes(order="C")).hexdigest()
+                            item["coordinate_sha256"] = _coordinate_sha256(coords)
                             item["coordinate_bounds"] = None
 
                         if valid_patch_size:
@@ -396,7 +395,6 @@ def _inspect_slide(
         _failure(item, "H5_READ_FAILED", f"Could not inspect H5 file: {type(error).__name__}: {error}")
 
     item["status"] = "passed" if not item["failures"] else "failed"
-    return feature_dim_reference
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -457,18 +455,43 @@ def audit_inventory(manifest_path: Path, output_path: Path) -> dict[str, Any]:
     duplicate_ids = {slide_id for slide_id, count in id_counts.items() if count > 1}
 
     slides: list[dict[str, Any]] = []
-    feature_dim_reference: int | None = None
     for index, source_row in enumerate(rows, start=2):
         item = _base_slide(source_row, manifest_path.parent, index)
         if missing_columns:
             for column in missing_columns:
                 _failure(item, f"MANIFEST_COLUMN_MISSING:{column}", f"Manifest does not contain required column {column!r}")
         try:
-            feature_dim_reference = _inspect_slide(source_row, item, duplicate_ids, feature_dim_reference)
+            _inspect_slide(source_row, item, duplicate_ids)
         except Exception as error:
             _failure(item, "SLIDE_AUDIT_UNEXPECTED_ERROR", f"{type(error).__name__}: {error}")
             item["status"] = "failed"
         slides.append(item)
+
+    observed_feature_dimensions = sorted({
+        int(item["feature_dim"])
+        for item in slides
+        if isinstance(item["feature_dim"], int) and int(item["feature_dim"]) > 0
+    })
+    feature_dim_reference = (
+        observed_feature_dimensions[0] if len(observed_feature_dimensions) == 1 else None
+    )
+    dimensions_are_consistent = len(observed_feature_dimensions) == 1
+    for item in slides:
+        dimension = item["feature_dim"]
+        if dimension is None:
+            continue
+        consistent = dimensions_are_consistent and int(dimension) == feature_dim_reference
+        _mark(item, "feature_dim_consistent", consistent)
+        if not consistent:
+            if dimensions_are_consistent:
+                message = f"Expected {feature_dim_reference}, found {dimension}"
+            else:
+                message = (
+                    "No unique positive feature dimension exists; observed "
+                    f"{observed_feature_dimensions}"
+                )
+            _failure(item, "FEATURE_DIM_MISMATCH", message)
+        item["status"] = "passed" if not item["failures"] else "failed"
 
     failed_count = sum(item["status"] != "passed" for item in slides)
     status = "failed" if failed_count or manifest_failures else "passed"
@@ -478,7 +501,9 @@ def audit_inventory(manifest_path: Path, output_path: Path) -> dict[str, Any]:
         "manifest_path": str(manifest_path),
         "manifest_sha256": manifest_sha256,
         "manifest_failures": manifest_failures,
+        "observed_feature_dimensions": observed_feature_dimensions,
         "feature_dim_reference": feature_dim_reference,
+        "coordinate_sha256_spec": "SHA-256 of coords canonicalized to signed little-endian int64, C-order bytes",
         "overlap_check_method": {
             "algorithm": "spatial hash over patch_size_level0-sized bins; exact rectangle checks only within shared bins",
             "expected_complexity": "O(N) time and O(N) auxiliary references for regular patch grids; pathological bucket crowding can increase comparisons",

@@ -127,7 +127,7 @@ def _install_fake_openslide(monkeypatch) -> None:
 
 
 def test_valid_inventory_reports_hashes_geometry_and_dataset_shapes(tmp_path, monkeypatch):
-    from scripts.audit_stage3_inventory import audit_inventory
+    from scripts.audit_stage3_inventory import _coordinate_sha256, audit_inventory
 
     manifest = _write_manifest(tmp_path / "data", [("slide_ok", "valid")])
     _install_fake_openslide(monkeypatch)
@@ -137,7 +137,9 @@ def test_valid_inventory_reports_hashes_geometry_and_dataset_shapes(tmp_path, mo
 
     row = report["slides"][0]
     h5_path = Path(row["h5_path"])
-    expected_coord_bytes = np.asarray([[0, 0], [4, 0], [0, 4]], dtype=np.int64).tobytes()
+    expected_coord_bytes = np.asarray(
+        [[0, 0], [4, 0], [0, 4]], dtype="<i8", order="C"
+    ).tobytes(order="C")
     assert report["schema"] == "stage3-h5-inventory-v1"
     assert report["status"] == "passed"
     assert report["slide_count"] == report["passed_slide_count"] == 1
@@ -158,6 +160,11 @@ def test_valid_inventory_reports_hashes_geometry_and_dataset_shapes(tmp_path, mo
     assert row["patch_size_level0"] == 4
     assert row["wsi_dimensions"] == [12, 12]
     assert row["coordinate_sha256"] == hashlib.sha256(expected_coord_bytes).hexdigest()
+    big_endian_coords = np.asarray([[0, 0], [4, 0], [0, 4]], dtype=">i8")
+    assert _coordinate_sha256(big_endian_coords) == hashlib.sha256(expected_coord_bytes).hexdigest()
+    assert report["coordinate_sha256_spec"] == (
+        "SHA-256 of coords canonicalized to signed little-endian int64, C-order bytes"
+    )
     assert row["coordinate_bounds"] == {
         "min_x": 0,
         "min_y": 0,
@@ -252,7 +259,7 @@ def test_failed_inventory_writes_complete_atomic_report_for_every_slide(
     assert replacements[0][0].exists() is False
 
 
-def test_manifest_with_inconsistent_feature_dimensions_fails_outlier_slide(
+def test_manifest_with_inconsistent_feature_dimensions_fails_every_dimension(
     tmp_path, monkeypatch
 ):
     from scripts.audit_stage3_inventory import audit_inventory
@@ -266,8 +273,44 @@ def test_manifest_with_inconsistent_feature_dimensions_fails_outlier_slide(
     report = audit_inventory(manifest, tmp_path / "inventory.json")
 
     assert report["status"] == "failed"
-    assert report["passed_slide_count"] == 1
-    assert report["failed_slide_count"] == 1
+    assert report["passed_slide_count"] == 0
+    assert report["failed_slide_count"] == 2
+    assert report["observed_feature_dimensions"] == [4, 5]
+    assert report["feature_dim_reference"] is None
     assert report["slides"][0]["feature_dim"] == 4
     assert report["slides"][1]["feature_dim"] == 5
-    assert "FEATURE_DIM_MISMATCH" in report["slides"][1]["failures"]
+    for slide in report["slides"]:
+        assert "FEATURE_DIM_MISMATCH" in slide["failures"]
+        assert slide["checks"]["feature_dim_consistent"] is False
+
+
+def test_feature_dimension_diagnostics_are_independent_of_manifest_order(
+    tmp_path, monkeypatch
+):
+    from scripts.audit_stage3_inventory import audit_inventory
+
+    cases = [("slide_dim4", "valid"), ("slide_dim5", "feature_dim_mismatch")]
+    manifest_forward = _write_manifest(tmp_path / "forward", cases)
+    manifest_reverse = _write_manifest(tmp_path / "reverse", list(reversed(cases)))
+    _install_fake_openslide(monkeypatch)
+
+    forward = audit_inventory(manifest_forward, tmp_path / "forward.json")
+    reverse = audit_inventory(manifest_reverse, tmp_path / "reverse.json")
+
+    def diagnostics(report):
+        return {
+            row["slide_id"]: (
+                row["status"],
+                sorted(row["failures"]),
+                row["checks"]["feature_dim_consistent"],
+            )
+            for row in report["slides"]
+        }
+
+    assert diagnostics(forward) == diagnostics(reverse)
+    assert forward["observed_feature_dimensions"] == reverse["observed_feature_dimensions"] == [4, 5]
+    assert forward["feature_dim_reference"] is reverse["feature_dim_reference"] is None
+    assert diagnostics(forward) == {
+        "slide_dim4": ("failed", ["FEATURE_DIM_MISMATCH"], False),
+        "slide_dim5": ("failed", ["FEATURE_DIM_MISMATCH"], False),
+    }
