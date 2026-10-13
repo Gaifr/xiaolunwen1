@@ -103,6 +103,7 @@ class FakeEvidenceModel(torch.nn.Module):
     """Small differentiable stand-in whose patch outputs encode their input row."""
 
     behavior = "valid"
+    output_bias = 0.0
 
     def __init__(self, config):
         super().__init__()
@@ -112,9 +113,10 @@ class FakeEvidenceModel(torch.nn.Module):
 
     def forward(self, slide):
         row_ids = slide.features[:, 0]
-        raw_patch_logits = self.loc_scale * (row_ids / 10.0)
+        raw_patch_logits = self.loc_scale * (row_ids / 10.0) + self.output_bias
         evidence_scores = torch.sigmoid(raw_patch_logits)
-        slide_logits = torch.stack((self.cls_scale * -0.2, self.cls_scale * 0.3))
+        slide_logits = torch.stack((self.cls_scale * -0.2 + self.output_bias,
+                                    self.cls_scale * 0.3 - self.output_bias))
 
         if self.behavior == "classification_missing":
             slide_logits = torch.tensor([0.1, 0.4], device=row_ids.device)
@@ -152,7 +154,7 @@ class FakeEvidenceModel(torch.nn.Module):
         if self.config.variant == "linear_patch":
             # The E/F protocol reports raw patch logits for F and probabilities as
             # the localization scores used by the shared loss.
-            raw_patch_logits = self.loc_scale * (row_ids / 10.0)
+            raw_patch_logits = self.loc_scale * (row_ids / 10.0) + self.output_bias
         else:
             raw_patch_logits = None
         return SimpleNamespace(
@@ -227,6 +229,7 @@ def smoke_case(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(smoke_stage3_ef, "EvidenceModel", FakeEvidenceModel)
     FakeEvidenceModel.behavior = "valid"
+    FakeEvidenceModel.output_bias = 0.0
     return SimpleNamespace(
         manifest=manifest,
         rows=rows,
@@ -369,8 +372,10 @@ def test_success_writes_exact_eight_v2_records_hashes_sources_and_row_aligned_te
         assert np.isfinite(record["loss_cls"])
         assert np.isfinite(record["loss_loc"])
 
-        prediction_path = smoke_case.output / f"{variant}_{slide_id}.pt"
+        prediction_path = smoke_case.output / record["prediction_file"]
         assert prediction_path.is_file()
+        assert re.fullmatch(r"[0-9a-f]{64}", record["prediction_sha256"])
+        assert record["prediction_sha256"] == _sha256(prediction_path)
         prediction = torch.load(prediction_path, map_location="cpu", weights_only=False)
         assert {
             "slide_id", "variant", "slide_logits", "slide_probabilities",
@@ -402,3 +407,48 @@ def test_success_writes_exact_eight_v2_records_hashes_sources_and_row_aligned_te
     report_path = smoke_case.output / "smoke_report.json"
     assert report_path.is_file()
     assert json.loads(report_path.read_text(encoding="utf-8")) == result
+
+
+def _assert_failed_rerun_invalidated_success(output: Path) -> None:
+    report_path = output / "smoke_report.json"
+    if report_path.is_file():
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        assert report.get("status") != "passed", "failed rerun left a stale passed report"
+    else:
+        assert not list(output.glob("*.pt")), "failed rerun left orphaned old prediction exports"
+
+
+def test_pre_export_validation_failure_invalidates_a_previous_success(smoke_case):
+    first = _run(smoke_case)
+    assert first["status"] == "passed"
+    assert len(list(smoke_case.output.glob("*.pt"))) == 8
+
+    FakeEvidenceModel.behavior = "query_attention_nonfinite"
+    with pytest.raises(ValueError, match="(?i)attention"):
+        _run(smoke_case)
+
+    _assert_failed_rerun_invalidated_success(smoke_case.output)
+
+
+def test_save_failure_cleans_temporary_file_and_invalidates_previous_success(smoke_case, monkeypatch):
+    first = _run(smoke_case)
+    assert first["status"] == "passed"
+    assert len(list(smoke_case.output.glob("*.pt"))) == 8
+
+    real_torch_save = torch.save
+    save_calls = 0
+
+    def save_then_fail_on_second_export(value, path, *args, **kwargs):
+        nonlocal save_calls
+        save_calls += 1
+        real_torch_save(value, path, *args, **kwargs)
+        if save_calls == 2:
+            raise OSError("INJECTED_STAGE3_EXPORT_WRITE_FAILURE")
+
+    monkeypatch.setattr(smoke_stage3_ef.torch, "save", save_then_fail_on_second_export)
+    FakeEvidenceModel.output_bias = 0.2
+    with pytest.raises(OSError, match="INJECTED_STAGE3_EXPORT_WRITE_FAILURE"):
+        _run(smoke_case)
+
+    assert not list(smoke_case.output.rglob("*.tmp")), "failed save left a temporary export"
+    _assert_failed_rerun_invalidated_success(smoke_case.output)
