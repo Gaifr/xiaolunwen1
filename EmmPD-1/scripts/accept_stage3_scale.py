@@ -35,6 +35,12 @@ EXPECTED_MANIFEST_SPLIT_COUNTS = {"train": 60, "val": 20, "test": 20}
 EVALUATED_SPLITS = ("train", "val")
 PEAK_SCORE_SOURCE = "xml_derived_h5_tumor_fraction"
 PEAK_INTERPRETATION = "data_pipeline_scale_only_not_model_performance"
+METRIC_SCORE_POLICY = {
+    "area_metrics": PEAK_SCORE_SOURCE,
+    "patch_metrics": PEAK_SCORE_SOURCE,
+    "peaks": PEAK_SCORE_SOURCE,
+    "interpretation": PEAK_INTERPRETATION,
+}
 
 
 def _sha256(path: Path) -> str:
@@ -263,6 +269,8 @@ def _metric_summary(row: dict[str, str], verified_input: dict[str, Any],
         "patch_size_level0": size,
         "lesion_count": len(lesions),
         "truth_repair_count": len(truth.repairs) if truth is not None else 0,
+        "metric_score_source": PEAK_SCORE_SOURCE,
+        "metric_interpretation": PEAK_INTERPRETATION,
         "peak_count": len(peak_indices),
         "peak_indices": peak_indices,
         "area_metrics": _canonical_metric_values(area),
@@ -382,6 +390,7 @@ def run_scale_acceptance(manifest_path: Path, inventory_path: Path,
         "manifest_split_counts": manifest_counts,
         "slides": final_slides,
         "totals": totals,
+        "metric_score_policy": dict(METRIC_SCORE_POLICY),
         "peak_score_source": PEAK_SCORE_SOURCE,
         "peak_interpretation": PEAK_INTERPRETATION,
         "repetitions_requested": repetitions,

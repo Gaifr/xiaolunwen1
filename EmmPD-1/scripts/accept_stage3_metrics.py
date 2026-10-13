@@ -29,6 +29,21 @@ from modules.stage3_metrics import (  # noqa: E402
 
 SCHEMA = "stage3-metric-acceptance-v1"
 TOLERANCE = 1e-10
+REQUIRED_CASE_IDS = frozenset({
+    "zero_reachability",
+    "full_reachability",
+    "partial_reachability",
+    "exclusion_hole",
+    "overlapping_grid_rejection",
+    "budget_floor",
+    "budget_ties",
+    "small_lesion",
+    "boundary_lesion",
+    "normal_empty_truth",
+    "repeated_peaks",
+    "single_class_patch_metric_na",
+})
+REQUIRED_CASE_COUNT = 12
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -262,10 +277,26 @@ def run_synthetic_acceptance(output_path: Path) -> dict[str, Any]:
             "actual_values": {"error_type": type(error).__name__, "error": str(error)},
             "tolerance": TOLERANCE, "passed": False,
         }]
+    case_ids = [str(case.get("case_id", "<missing-case-id>")) for case in cases]
+    observed_ids = set(case_ids)
+    missing_case_ids = sorted(REQUIRED_CASE_IDS - observed_ids)
+    unexpected_case_ids = sorted(observed_ids - REQUIRED_CASE_IDS)
+    duplicate_case_ids = sorted({case_id for case_id in case_ids if case_ids.count(case_id) > 1})
+    case_id_integrity_passed = (
+        len(cases) == REQUIRED_CASE_COUNT
+        and observed_ids == REQUIRED_CASE_IDS
+        and not duplicate_case_ids
+    )
     report = {
         "schema": SCHEMA,
-        "status": "passed" if cases and all(case["passed"] for case in cases) else "failed",
+        "status": "passed" if case_id_integrity_passed
+        and cases and all(case["passed"] for case in cases) else "failed",
+        "required_case_count": REQUIRED_CASE_COUNT,
         "case_count": len(cases),
+        "case_id_integrity_passed": case_id_integrity_passed,
+        "missing_case_ids": missing_case_ids,
+        "unexpected_case_ids": unexpected_case_ids,
+        "duplicate_case_ids": duplicate_case_ids,
         "cases": cases,
     }
     _atomic_write_json(Path(output_path), report)

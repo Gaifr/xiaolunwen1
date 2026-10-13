@@ -146,6 +146,48 @@ def test_synthetic_acceptance_fails_when_a_public_metric_returns_wrong_value(
     assert full["actual_values"]["mlac"] == 123.456
 
 
+def test_synthetic_acceptance_fails_when_a_required_case_is_missing(tmp_path, monkeypatch):
+    acceptance, run_synthetic_acceptance = _require_runner(
+        "scripts.accept_stage3_metrics", "run_synthetic_acceptance"
+    )
+    real_build_cases = acceptance._build_cases
+    missing_id = "full_reachability"
+    monkeypatch.setattr(
+        acceptance, "_build_cases",
+        lambda: [case for case in real_build_cases()
+                 if case["case_id"] != missing_id],
+    )
+
+    report = run_synthetic_acceptance(tmp_path / "missing_case.json")
+
+    assert report["status"] == "failed"
+    assert report["case_count"] == 11
+    assert report["missing_case_ids"] == [missing_id]
+    assert report["unexpected_case_ids"] == []
+
+
+def test_synthetic_acceptance_fails_when_an_unfrozen_case_is_added(tmp_path, monkeypatch):
+    acceptance, run_synthetic_acceptance = _require_runner(
+        "scripts.accept_stage3_metrics", "run_synthetic_acceptance"
+    )
+    real_build_cases = acceptance._build_cases
+
+    def add_case():
+        cases = real_build_cases()
+        extra = dict(cases[0])
+        extra["case_id"] = "unfrozen_extra_case"
+        cases.append(extra)
+        return cases
+
+    monkeypatch.setattr(acceptance, "_build_cases", add_case)
+    report = run_synthetic_acceptance(tmp_path / "extra_case.json")
+
+    assert report["status"] == "failed"
+    assert report["case_count"] == 13
+    assert report["missing_case_ids"] == []
+    assert report["unexpected_case_ids"] == ["unfrozen_extra_case"]
+
+
 def _write_fake_h5(path: Path, *, tumor: bool) -> None:
     coords = np.asarray([[0, 0], [10, 0], [20, 0], [30, 0]], dtype=np.int64)
     fractions = np.asarray([1.0, 0.0, 1.0, 0.0] if tumor else [0.0] * 4,
@@ -190,8 +232,9 @@ def _write_scale_inputs(root: Path) -> tuple[Path, Path, dict[str, int]]:
         rows.append({
             "slide_id": slide_id,
             "split": split,
-            "slide_label": int(tumor),
-            "annotation_status": "full" if tumor else "normal",
+            "slide_label": "DO_NOT_READ_TEST_LABEL" if split == "test" else int(tumor),
+            "annotation_status": ("DO_NOT_READ_TEST_ANNOTATION_STATUS" if split == "test"
+                                  else "full" if tumor else "normal"),
             "xml_path": str(xml_path),
             "h5_path": str(h5_path),
         })
@@ -289,6 +332,8 @@ def test_scale_acceptance_is_train_val_only_and_has_stable_model_free_digest(
     assert report["split_slide_counts"] == {"train": 60, "val": 20}
     assert report["manifest_split_counts"] == {"train": 60, "val": 20, "test": 20}
     assert len(report["slides"]) == 80
+    eligible_ids = {slide_id for slide_id in labels if not slide_id.startswith("test_")}
+    positive_eligible_ids = {slide_id for slide_id in eligible_ids if labels[slide_id]}
     assert {slide["split"] for slide in report["slides"]} == {"train", "val"}
     assert all(slide["patch_count"] == 4 for slide in report["slides"])
     assert all(slide["lesion_count"] == (2 if labels[slide["slide_id"]] else 0)
@@ -297,6 +342,23 @@ def test_scale_acceptance_is_train_val_only_and_has_stable_model_free_digest(
                for slide in report["slides"])
     assert report["peak_score_source"] == "xml_derived_h5_tumor_fraction"
     assert report["peak_interpretation"] == "data_pipeline_scale_only_not_model_performance"
+    assert report["metric_score_policy"] == {
+        "area_metrics": "xml_derived_h5_tumor_fraction",
+        "patch_metrics": "xml_derived_h5_tumor_fraction",
+        "peaks": "xml_derived_h5_tumor_fraction",
+        "interpretation": "data_pipeline_scale_only_not_model_performance",
+    }
+    assert all(slide["metric_score_source"] == "xml_derived_h5_tumor_fraction"
+               for slide in report["slides"])
+    assert all(slide["metric_interpretation"] ==
+               "data_pipeline_scale_only_not_model_performance" for slide in report["slides"])
+    by_slide = {slide["slide_id"]: slide for slide in report["slides"]}
+    for slide_id in positive_eligible_ids:
+        assert by_slide[slide_id]["xml_sha256"] == _sha256(
+            tmp_path / "inputs" / f"{slide_id}.xml"
+        )
+    for slide_id in eligible_ids - positive_eligible_ids:
+        assert by_slide[slide_id]["xml_sha256"] is None
     assert len(report["repetition_digests"]) == 2
     assert report["repetition_digests"][0] == report["repetition_digests"][1]
     assert report["deterministic_digest"] == report["repetition_digests"][0]
@@ -308,12 +370,24 @@ def test_scale_acceptance_is_train_val_only_and_has_stable_model_free_digest(
         "manifest_sha256": _sha256(manifest),
         "inventory_sha256": _sha256(inventory),
     }
-    eligible_ids = {slide_id for slide_id in labels if not slide_id.startswith("test_")}
-    positive_eligible_ids = {slide_id for slide_id in eligible_ids if labels[slide_id]}
     assert set(Path(name).stem for name in opened_h5) == eligible_ids
     assert len(opened_h5) >= len(eligible_ids)
     assert set(seen_xml) == positive_eligible_ids
     assert not any(slide_id.startswith("test_") for slide_id in seen_xml)
+
+    # Runtime and RSS belong in the report but not its per-slide digest.
+    rss = {"bytes": 4096}
+    monkeypatch.setattr(acceptance, "_process_peak_rss_bytes", lambda: rss["bytes"])
+    first_digest_report = run_scale_acceptance(
+        manifest, inventory, tmp_path / "scale_rss_a.json", repetitions=2
+    )
+    rss["bytes"] = 8192
+    second_digest_report = run_scale_acceptance(
+        manifest, inventory, tmp_path / "scale_rss_b.json", repetitions=2
+    )
+    assert first_digest_report["process_peak_rss_bytes"] != second_digest_report["process_peak_rss_bytes"]
+    assert first_digest_report["wall_time_seconds"] != second_digest_report["wall_time_seconds"]
+    assert first_digest_report["deterministic_digest"] == second_digest_report["deterministic_digest"]
 
 
 def test_scale_acceptance_fails_if_repeated_canonical_outputs_differ(tmp_path, monkeypatch):
