@@ -13,6 +13,7 @@ import json
 import os
 import sys
 from dataclasses import asdict, is_dataclass, replace
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -90,6 +91,22 @@ def _resolve_h5_path(manifest_path: Path, row: Mapping[str, str]) -> Path:
         raise ValueError(f"SMOKE_H5_PATH_MISSING {row.get('slide_id', '')}")
     path = Path(raw_path)
     return path if path.is_absolute() else manifest_path.parent / path
+
+
+def _optional_metadata_int(value: Any, *, name: str, slide_id: str) -> int:
+    """Parse optional integer metadata supplied as a number or CSV text."""
+    if value is None:
+        return 0
+    raw_value = str(value).strip()
+    if not raw_value:
+        return 0
+    try:
+        parsed = Decimal(raw_value)
+    except InvalidOperation as error:
+        raise ValueError(f"SMOKE_INVALID_{name.upper()} {slide_id} value={value!r}") from error
+    if not parsed.is_finite() or parsed != parsed.to_integral_value():
+        raise ValueError(f"SMOKE_INVALID_{name.upper()} {slide_id} value={value!r}")
+    return int(parsed)
 
 
 def _manifest_rows(manifest_path: Path) -> list[dict[str, str]]:
@@ -178,7 +195,9 @@ def _validate_h5_alignment(
         if not np.array_equal(np.asarray(h5_features, dtype=np.float32), slide_features):
             raise ValueError(f"SMOKE_FEATURE_ROW_MAPPING {slide_id}")
         h5_patch_size = int(handle.attrs.get("patch_size_level0", 0))
-        manifest_patch_size = int((row.get("patch_size_level0") or 0).strip() or 0)
+        manifest_patch_size = _optional_metadata_int(
+            row.get("patch_size_level0"), name="patch_size_metadata", slide_id=slide_id
+        )
         expected_patch_size = h5_patch_size or manifest_patch_size
         if expected_patch_size < 1 or int(slide.patch_size_level0) != expected_patch_size:
             raise ValueError(
