@@ -34,7 +34,7 @@ def _fixture(tmp_path, decision="accept_make_valid"):
     audit.write_text(json.dumps(report), encoding="utf-8")
 
     review_dir = tmp_path / "review"
-    review_dir.mkdir()
+    review_dir.mkdir(exist_ok=True)
     render_manifest = review_dir / "render_manifest.json"
     render_manifest.write_text(json.dumps({
         "audit_sha256": _sha256(audit), "manifest_sha256": _sha256(manifest),
@@ -126,6 +126,9 @@ def test_freeze_and_evaluator_require_the_same_validated_receipt(tmp_path):
     verified = verify_lock(lock_path, manifest, repair_review_receipt=receipt)
     assert_repairs_approved(verified["repair_review"], "tumor_000", "train", _sha256(xml),
                             report["repair_cases"][0]["repairs"])
+    with pytest.raises(ValueError, match="REPAIR_REVIEW_XML_MISMATCH"):
+        assert_repairs_approved(verified["repair_review"], "tumor_000", "train", "0" * 64,
+                                report["repair_cases"][0]["repairs"])
 
     with pytest.raises(ValueError, match="STAGE3_REPAIR_REVIEW_LOCK_MISMATCH"):
         verify_lock(lock_path, manifest, repair_review_receipt=tmp_path / "missing.json")

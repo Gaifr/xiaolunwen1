@@ -21,6 +21,7 @@ if str(ROOT) not in sys.path:
 
 from modules.camelyon_dataset import CamelyonDataset
 from modules.evidence_model import EvidenceModel, EvidenceModelConfig
+from modules.stage3_review import assert_repairs_approved
 from modules.stage3_metrics import (area_metrics, overlap_matrix, parse_truth, patch_metrics,
                                     peak_froc, validate_grid)
 from scripts.freeze_stage3 import sha256, verify_lock
@@ -42,18 +43,24 @@ def _select_threshold(labels, scores):
 
 
 def evaluate(checkpoint, manifest, split, output_root, device="cuda", threshold_from=None,
-             freeze_file=None, config_path=None):
+             freeze_file=None, config_path=None, repair_review_receipt=None):
     if split not in {"train", "val", "test"}:
         raise ValueError("SPLIT_INVALID")
     if split == "test" and threshold_from is None:
         raise ValueError("TEST_REQUIRES_VALIDATION_THRESHOLD_FILE")
     checkpoint, manifest, output_root = map(Path, (checkpoint, manifest, output_root))
-    if split == "test":
-        if freeze_file is None:
-            raise ValueError("TEST_REQUIRES_FREEZE_LOCK")
-        locked = verify_lock(freeze_file, manifest)
-        if config_path is None or locked["config_sha256"].get(Path(config_path).name) != sha256(config_path):
+    locked = None
+    if split == "test" and freeze_file is None:
+        raise ValueError("TEST_REQUIRES_FREEZE_LOCK")
+    if freeze_file is not None:
+        locked = verify_lock(freeze_file, manifest,
+                             repair_review_receipt=repair_review_receipt)
+        if (split == "test" and config_path is None) or (
+                config_path is not None and
+                locked["config_sha256"].get(Path(config_path).name) != sha256(config_path)):
             raise ValueError("TEST_CONFIG_LOCK_MISMATCH")
+    elif repair_review_receipt is not None:
+        raise ValueError("REPAIR_REVIEW_RECEIPT_REQUIRES_FREEZE_LOCK")
     with manifest.open(newline="", encoding="utf-8") as stream:
         rows = [r for r in csv.DictReader(stream) if r["split"].strip() == split]
     if not rows or len({r["slide_id"] for r in rows}) != len(rows):
@@ -74,6 +81,7 @@ def evaluate(checkpoint, manifest, split, output_root, device="cuda", threshold_
         token_dir.mkdir(exist_ok=True)
     patch_rows, slide_rows, lesion_rows, froc_slides = [], [], [], []
     probabilities, labels, per_slide_patch = [], [], []
+    repair_review = locked.get("repair_review") if locked else None
     for slide in dataset:
         row = row_by_id[slide.slide_id]
         coords = slide.coords_level0.numpy()
@@ -112,7 +120,8 @@ def evaluate(checkpoint, manifest, split, output_root, device="cuda", threshold_
                 raise ValueError(f"POSITIVE_XML_INCOMPLETE {slide.slide_id}")
             truth = parse_truth(row["xml_path"])
             if truth.repairs:
-                raise ValueError(f"XML_REPAIR_REQUIRES_REVIEW {slide.slide_id} {truth.repairs}")
+                assert_repairs_approved(repair_review, slide.slide_id, row["split"],
+                                        _hash(row["xml_path"]), truth.repairs)
         elif slide.annotation_status != "normal":
             raise ValueError(f"NORMAL_STATUS_INVALID {slide.slide_id}")
         lesions = truth.lesions if truth else ()
@@ -218,6 +227,7 @@ def main():
     parser.add_argument("--threshold-from", type=Path)
     parser.add_argument("--freeze-file", type=Path)
     parser.add_argument("--config-path", type=Path)
+    parser.add_argument("--repair-review-receipt", type=Path)
     args = parser.parse_args()
     print(json.dumps(evaluate(**vars(args)), ensure_ascii=False, indent=2))
 
