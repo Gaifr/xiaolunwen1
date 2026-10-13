@@ -263,8 +263,34 @@ def _validate_export(
         _require_finite(value, name, slide_id)
 
 
-def smoke(manifest, slide_ids, output, device="cuda") -> dict[str, Any]:
-    """Run fresh E/F models on the approved four training slides and export them."""
+def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    try:
+        temporary.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False, allow_nan=False),
+            encoding="utf-8",
+        )
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            # Preserve a write/replace exception; the caller will record the
+            # original failure in the report when possible.
+            pass
+
+
+def _run_smoke(
+    manifest,
+    slide_ids,
+    output_path: Path,
+    completed_records: list[dict[str, Any]],
+    device="cuda",
+) -> dict[str, Any]:
+    """Validate all inputs, run fresh E/F models, and write validated exports."""
     manifest_path = Path(manifest).resolve()
     requested_ids = _validate_requested_slides(slide_ids)
     rows = _manifest_rows(manifest_path)
@@ -419,34 +445,77 @@ def smoke(manifest, slide_ids, output, device="cuda") -> dict[str, Any]:
     if len(prepared_exports) != 8 or actual_pairs != expected_pairs:
         raise RuntimeError(f"SMOKE_EXPORT_INVENTORY {sorted(actual_pairs)}")
 
-    output_path = Path(output)
-    output_path.mkdir(parents=True, exist_ok=True)
-    records: list[dict[str, Any]] = []
     for filename, export, record in prepared_exports:
         destination = output_path / filename
         temporary = destination.with_name(destination.name + ".tmp")
-        torch.save(export, temporary)
-        os.replace(temporary, destination)
-        records.append(record)
+        try:
+            torch.save(export, temporary)
+            os.replace(temporary, destination)
+            # This digest covers the final .pt bytes. It stays in the external
+            # report because placing a file's own digest inside it is recursive.
+            record["prediction_sha256"] = _sha256(destination)
+        finally:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+        completed_records.append(record)
 
-    report = {
+    return {
         "schema": "stage3-ef-smoke-v2",
         "status": "passed",
         "slide_ids": list(APPROVED_TRAIN_SLIDES),
         "variant_count": len(VARIANTS),
-        "records": records,
+        "records": completed_records,
         "interpretation": (
             "Implementation smoke using freshly initialized models; not a trained-model "
             "performance result."
         ),
     }
+
+
+def smoke(manifest, slide_ids, output, device="cuda") -> dict[str, Any]:
+    """Run fresh E/F smoke and leave an explicit running, passed, or failed report."""
+    output_path = Path(output)
     report_path = output_path / "smoke_report.json"
-    temporary_report = report_path.with_name(report_path.name + ".tmp")
-    temporary_report.write_text(
-        json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False), encoding="utf-8"
-    )
-    os.replace(temporary_report, report_path)
-    return report
+    completed_records: list[dict[str, Any]] = []
+    report_identity = {
+        "schema": "stage3-ef-smoke-v2",
+        "slide_ids": list(APPROVED_TRAIN_SLIDES),
+        "variant_count": len(VARIANTS),
+    }
+    try:
+        output_path.mkdir(parents=True, exist_ok=True)
+        _atomic_write_json(
+            report_path,
+            {**report_identity, "status": "running", "records": []},
+        )
+        report = _run_smoke(
+            manifest,
+            slide_ids,
+            output_path,
+            completed_records,
+            device=device,
+        )
+        # The passed report is written only after all eight files were replaced
+        # successfully and their final-byte SHA-256 digests were recorded.
+        _atomic_write_json(report_path, report)
+        return report
+    except BaseException as error:
+        failed_report = {
+            **report_identity,
+            "status": "failed",
+            "records": completed_records,
+            "error": {"type": type(error).__name__, "message": str(error)},
+        }
+        try:
+            _atomic_write_json(report_path, failed_report)
+        except BaseException:
+            # Keep the original validation/inference/export exception visible.
+            pass
+        raise
 
 
 def main(argv: Sequence[str] | None = None) -> int:
