@@ -1,0 +1,24 @@
+# Python/runtime artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# CAMELYON data, model weights, and generated experiment outputs
+EmmPD-1/**/raw/
+EmmPD-1/**/derived/
+EmmPD-1/**/runs/
+EmmPD-1/**/checkpoints/
+EmmPD-1/**/*.tif
+EmmPD-1/**/*.tiff
+EmmPD-1/**/*.svs
+EmmPD-1/**/*.h5
+EmmPD-1/**/*.hdf5
+EmmPD-1/**/*.pt
+EmmPD-1/**/*.pth
+EmmPD-1/**/*.bin
+EmmPD-1/**/*.log
+EmmPD-1/**/*.bak*
+data/
+**/data.local.yaml
